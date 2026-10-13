@@ -1,0 +1,6 @@
+{
+  "name": "The Burd",
+  "description": "The Burd - Nationwide US bird tracking application, local roosts, and live eBird API telemetry.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
