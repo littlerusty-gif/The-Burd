@@ -307,8 +307,39 @@ app.post('/api/birds/reports', (req: Request, res: Response) => {
   res.status(201).json(newReport);
 });
 
-// 6. AI Roost Summary (Gemini Powered)
-app.post('/api/ai/roost-summary', async (req: Request, res: Response) => {
+// 6. AI Roost Summary & Diagnostics Handshake (Gemini Powered)
+app.get(['/api/ai', '/api/ai/roost-summary'], async (req: Request, res: Response) => {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'MY_GEMINI_API_KEY') {
+    return res.json({
+      status: 'warning',
+      configured: false,
+      message: 'Gemini API key is not configured in environment (using cached field guide)',
+      model: 'cached-field-guide',
+    });
+  }
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash?key=${GEMINI_API_KEY}`;
+    const pingRes = await fetch(url);
+    if (pingRes.ok) {
+      return res.json({
+        status: 'ok',
+        configured: true,
+        message: 'Gemini Generative Language API Handshake successful (gemini-2.5-flash ready)',
+        model: 'gemini-2.5-flash',
+      });
+    }
+    const errJson: any = await pingRes.json().catch(() => ({}));
+    return res.status(pingRes.status).json({
+      status: 'error',
+      configured: true,
+      message: errJson?.error?.message || `Gemini API returned status ${pingRes.status}`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
+app.post(['/api/ai', '/api/ai/roost-summary'], async (req: Request, res: Response) => {
   const { question } = req.body;
   const prompt = question || "Provide a concise Portland winter crow mega-roost staging summary, flight arrival times, and best viewing spots along the Willamette River.";
 

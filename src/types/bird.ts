@@ -66,6 +66,29 @@ export interface FlightCorridor {
   flyway?: 'Pacific' | 'Central' | 'Mississippi' | 'Atlantic';
   species?: string;
   isContinentalTrunk?: boolean;
+  roostId?: string;
+  stagingCoords?: [number, number];
+  roostCoords?: [number, number];
+}
+
+export interface RoostSite {
+  id: string;
+  roostId: string;
+  name: string;
+  species: string;
+  speciesCode: string;
+  lat: number;
+  lng: number;
+  count: number;
+  locName: string;
+  stagingAreaName: string;
+  stagingCoords: [number, number];
+  peakTime: string;
+  season: string;
+  description: string;
+  state: string;
+  flyway: 'Pacific' | 'Central' | 'Mississippi' | 'Atlantic';
+  corridorId?: string;
 }
 
 export type ViewMode = 'species' | 'recent' | 'notable' | 'hotspots' | 'routes';

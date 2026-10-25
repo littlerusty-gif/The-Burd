@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Observation, Hotspot, ViewMode, TaxonomyItem, CrowRoostReport, FlightCorridor, RegionConfig } from './types/bird';
 import { MeetupProposal } from './types/chat';
 import { Header } from './components/Header';
@@ -8,23 +8,68 @@ import { ReportModal } from './components/ReportModal';
 import { AiRoostWidget } from './components/AiRoostWidget';
 import { MobileBottomSheet } from './components/MobileBottomSheet';
 import { LocationModal } from './components/LocationModal';
-import { ErrorBoundary } from './components/ErrorBoundary';
-import { FieldChatDrawer } from './components/FieldChatDrawer';
+import { CommunityChat } from './components/CommunityChat';
+import { useCommunityChat } from './hooks/useCommunityChat';
 import { DisclaimerModal } from './components/DisclaimerModal';
 import { HandleModal } from './components/HandleModal';
 import { ShareModal } from './components/ShareModal';
 import { DonateModal } from './components/DonateModal';
 import { BottomNav } from './components/BottomNav';
 import { LayersModal } from './components/LayersModal';
-import { INITIAL_FALLBACK_OBSERVATIONS, MOCK_HOTSPOTS, FLIGHT_CORRIDORS } from './data/mockPortlandData';
-import { PRIMARY_REGIONS, US_STATES } from './data/regions';
+import { PreflightModal } from './components/PreflightModal';
+import { PreflightSummary, runPreflightDiagnostics } from './utils/preflightCheck';
+import { INITIAL_FALLBACK_OBSERVATIONS, MOCK_HOTSPOTS } from './data/mockPortlandData';
+import { PRIMARY_REGIONS } from './data/regions';
 import { isSpeciesOptimalNow } from './data/viewingForecast';
 import { fetchObservationsForRegion, fetchHotspotsForRegion } from './services/ebirdService';
 import { getCorridorsForRegion } from './data/roostCorridors';
+import { getRoostsAsObservations, getFlightPathForRoost } from './data/roosts';
 
 const STORAGE_KEY_HANDLE = 'thebirdbook_handle';
 const STORAGE_KEY_HOME_REGION = 'thebirdbook_home_region';
 const STORAGE_KEY_DISCLAIMER = 'thebirdbook_disclaimer_signed';
+
+/**
+ * Normalizes raw sightings into clean, flat JSON objects.
+ * Prevents circular references or deeply nested Leaflet event objects from polluting state.
+ */
+export function normalizeObservation(raw: any): Observation {
+  if (!raw) {
+    return {
+      id: `obs-${Math.random()}`,
+      speciesCode: 'unknown',
+      comName: 'Unknown Bird',
+      sciName: '',
+      locId: '',
+      locName: 'Unknown Location',
+      obsDt: 'Recent',
+      howMany: 1,
+      lat: 0,
+      lng: 0,
+      obsReviewed: false,
+      subId: '',
+    };
+  }
+  return {
+    id: String(raw.id || raw.obsId || `obs-${Math.random()}`),
+    speciesCode: String(raw.speciesCode || 'unknown'),
+    comName: String(raw.comName || 'Unknown Bird'),
+    sciName: String(raw.sciName || ''),
+    locId: String(raw.locId || ''),
+    locName: String(raw.locName || 'Field Observation'),
+    obsDt: String(raw.obsDt || 'Recently'),
+    howMany: typeof raw.howMany === 'number' && !isNaN(raw.howMany) ? raw.howMany : 1,
+    lat: Number(raw.lat) || 0,
+    lng: Number(raw.lng) || 0,
+    obsReviewed: Boolean(raw.obsReviewed),
+    subId: String(raw.subId || ''),
+    direction: raw.direction ? String(raw.direction) : undefined,
+    isCrowRoost: Boolean(raw.isCrowRoost || (raw.howMany && raw.howMany >= 250)),
+    notes: raw.notes ? String(raw.notes) : undefined,
+    flightHeadingDeg: typeof raw.flightHeadingDeg === 'number' ? raw.flightHeadingDeg : undefined,
+    originStagingArea: raw.originStagingArea ? String(raw.originStagingArea) : undefined,
+  };
+}
 
 export const App: React.FC = () => {
   // Primary default region is Nationwide View (Contiguous US)
@@ -47,8 +92,17 @@ export const App: React.FC = () => {
   const [mode, setMode] = useState<ViewMode>('recent');
   const [selectedSpecies, setSelectedSpecies] = useState<TaxonomyItem | null>(null);
 
-  // Initial built-in fallback array of sightings - guaranteed never undefined
-  const [observations, setObservations] = useState<any[]>(INITIAL_FALLBACK_OBSERVATIONS || []);
+  // Initial sanitized fallback array of sightings + 15 Premier Roost Sites
+  const [observations, setObservations] = useState<Observation[]>(() => {
+    const fallbacks = (INITIAL_FALLBACK_OBSERVATIONS || []).map(normalizeObservation);
+    const roosts = getRoostsAsObservations().map(normalizeObservation);
+    const map = new Map<string, Observation>();
+    roosts.forEach((r) => map.set(r.id, r));
+    fallbacks.forEach((f) => {
+      if (!map.has(f.id)) map.set(f.id, f);
+    });
+    return Array.from(map.values());
+  });
   const [hotspots, setHotspots] = useState<Hotspot[]>(MOCK_HOTSPOTS || []);
   const [selectedItem, setSelectedItem] = useState<Observation | Hotspot | null>(null);
   const [selectedCorridor, setSelectedCorridor] = useState<FlightCorridor | null>(null);
@@ -59,15 +113,63 @@ export const App: React.FC = () => {
   const activeCorridors = useMemo(() => {
     return getCorridorsForRegion(currentRegion, 250);
   }, [currentRegion]);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(typeof window !== 'undefined' ? window.innerWidth >= 768 : false);
+
+  // Persistent sidebar on desktop (>=768px), togglable on mobile
+  const [isSidebarOpen, setIsSidebarOpen] = useState(
+    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
+  );
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [isAiWidgetOpen, setIsAiWidgetOpen] = useState(false);
   const [aiCustomQuestion, setAiCustomQuestion] = useState<string | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  // Field Chat & Community Meetup state guarded with try/catch
+  // Community Birder Chat state
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
+
+  // Active roost information for community chat channel filtering & auto-switch
+  const activeRoostId = useMemo(() => {
+    if (selectedCorridor?.roostId) return selectedCorridor.roostId;
+    if (selectedCorridor?.id && selectedCorridor.id.startsWith('corridor-roost-')) {
+      return selectedCorridor.id.replace('corridor-', '');
+    }
+    const obs = selectedItem as Observation;
+    if (obs && (obs.isCrowRoost || (typeof obs.howMany === 'number' && obs.howMany >= 250) || (obs.id && obs.id.startsWith('roost-')))) {
+      return obs.id?.replace('ROOST_', '') || obs.id;
+    }
+    return null;
+  }, [selectedItem, selectedCorridor]);
+
+  const activeRoostName = useMemo(() => {
+    if (selectedCorridor?.name) return selectedCorridor.name;
+    const obs = selectedItem as Observation;
+    if (obs && (obs.isCrowRoost || (typeof obs.howMany === 'number' && obs.howMany >= 250) || (obs.id && obs.id.startsWith('roost-')))) {
+      return obs.locName || obs.comName || 'Roost Staging';
+    }
+    return null;
+  }, [selectedItem, selectedCorridor]);
+
+  const activeSpecies = useMemo(() => {
+    if (selectedCorridor?.species) return selectedCorridor.species;
+    const obs = selectedItem as Observation;
+    if (obs && obs.comName) {
+      return obs.comName;
+    }
+    return null;
+  }, [selectedItem, selectedCorridor]);
+
+  // Real-time Community Birder Chat Hook powered by Supabase Realtime
+  const {
+    messages: communityChatMessages,
+    sendMessage: sendCommunityMessage,
+    activeChannel: chatChannel,
+    setActiveChannel: setChatChannel,
+    unreadCount: unreadChatCount,
+    isRealtimeActive,
+    isSupabaseConfigured,
+    isLoading: isChatLoading,
+  } = useCommunityChat(activeRoostId, isChatOpen);
+
   const [isDisclaimerOpen, setIsDisclaimerOpen] = useState<boolean>(false);
   const [isHandleModalOpen, setIsHandleModalOpen] = useState<boolean>(false);
   const [userHandle, setUserHandle] = useState<string>(() => {
@@ -92,10 +194,46 @@ export const App: React.FC = () => {
   const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
   const [isDonateModalOpen, setIsDonateModalOpen] = useState<boolean>(false);
   const [isLayersOpen, setIsLayersOpen] = useState<boolean>(false);
+  const [isPreflightOpen, setIsPreflightOpen] = useState<boolean>(false);
+  const [preflightSummary, setPreflightSummary] = useState<PreflightSummary | null>(null);
+  const [isPreflightLoading, setIsPreflightLoading] = useState<boolean>(false);
 
-  // Startup Geolocation Effect: Silently cache coordinates for proximity without overriding Nationwide view
+  // Safe Non-Blocking Execution: Automated Pre-Flight Diagnostics Check on app mount
   useEffect(() => {
-    // 1. If geolocation permission is already granted, dismiss onboarding modal immediately
+    let isMounted = true;
+    const runDiagnostics = async () => {
+      try {
+        const result = await runPreflightDiagnostics();
+        if (isMounted) {
+          setPreflightSummary(result);
+        }
+      } catch (err) {
+        console.warn('Pre-flight background diagnostics error:', err);
+      }
+    };
+
+    // Run slightly deferred to avoid competing with initial map paint
+    const timer = setTimeout(runDiagnostics, 500);
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  const handleRefreshPreflight = useCallback(async () => {
+    setIsPreflightLoading(true);
+    try {
+      const result = await runPreflightDiagnostics();
+      setPreflightSummary(result);
+    } catch (err) {
+      console.warn('Pre-flight refresh error:', err);
+    } finally {
+      setIsPreflightLoading(false);
+    }
+  }, []);
+
+  // Startup Geolocation Handshake: cached coordinates without overriding camera
+  useEffect(() => {
     if (typeof navigator !== 'undefined' && 'permissions' in navigator) {
       navigator.permissions
         ?.query({ name: 'geolocation' })
@@ -110,7 +248,6 @@ export const App: React.FC = () => {
         .catch(() => {});
     }
 
-    // 2. Silently acquire coordinates for proximity calculations without overriding Nationwide camera
     if (typeof navigator !== 'undefined' && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
@@ -126,19 +263,19 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Manual refresh sightings button handler
-  const handleRefreshSightings = () => {
-    setRefreshTrigger((prev) => prev + 1);
-  };
+  // Data fetching: guarded against coordinate fluctuation loops
+  const regionId = currentRegion.id;
+  const regionCode = currentRegion.regionCode;
+  const modeKey = mode;
+  const speciesKey = selectedSpecies?.speciesCode;
 
-  // Only trigger network fetches when currentRegion, mode, or manual refresh changes.
   useEffect(() => {
     let isCancelled = false;
 
     const loadData = async () => {
       setIsLoading(true);
       try {
-        if (mode === 'hotspots') {
+        if (modeKey === 'hotspots') {
           const spots = await fetchHotspotsForRegion(currentRegion);
           if (!isCancelled && Array.isArray(spots) && spots.length > 0) {
             setHotspots(spots);
@@ -146,12 +283,17 @@ export const App: React.FC = () => {
         } else {
           const obs = await fetchObservationsForRegion(
             currentRegion,
-            mode,
-            mode === 'species' ? selectedSpecies?.speciesCode : undefined,
+            modeKey,
+            modeKey === 'species' ? speciesKey : undefined,
             refreshTrigger > 0
           );
           if (!isCancelled && Array.isArray(obs) && obs.length > 0) {
-            setObservations(obs);
+            const fetched = obs.map(normalizeObservation);
+            const roosts = getRoostsAsObservations().map(normalizeObservation);
+            const map = new Map<string, Observation>();
+            roosts.forEach((r) => map.set(r.id, r));
+            fetched.forEach((f) => map.set(f.id, f));
+            setObservations(Array.from(map.values()));
           }
         }
       } catch (err) {
@@ -168,10 +310,10 @@ export const App: React.FC = () => {
     return () => {
       isCancelled = true;
     };
-  }, [currentRegion, mode, selectedSpecies, refreshTrigger]);
+  }, [regionId, regionCode, modeKey, speciesKey, refreshTrigger]);
 
   // "Use My Location" GPS Handler
-  const handleLocateMe = () => {
+  const handleLocateMe = useCallback(() => {
     if (!navigator.geolocation) {
       alert('Geolocation is not supported by your browser.');
       return;
@@ -204,13 +346,12 @@ export const App: React.FC = () => {
           sessionStorage.setItem('birdbook_welcome_dismissed', 'true');
         } catch {}
 
-        // Non-blocking parallel network fetch via Promise.allSettled
         Promise.allSettled([
           fetchObservationsForRegion(gpsRegion, 'recent', undefined, true),
           fetchHotspotsForRegion(gpsRegion),
         ]).then(([obsRes, spotsRes]) => {
           if (obsRes.status === 'fulfilled' && obsRes.value && obsRes.value.length > 0) {
-            setObservations(obsRes.value);
+            setObservations(obsRes.value.map(normalizeObservation));
           }
           if (spotsRes.status === 'fulfilled' && spotsRes.value && spotsRes.value.length > 0) {
             setHotspots(spotsRes.value);
@@ -228,10 +369,10 @@ export const App: React.FC = () => {
         maximumAge: 300000,
       }
     );
-  };
+  }, []);
 
   // Reset to Default View handler for Error Boundary recovery
-  const handleResetToDefault = () => {
+  const handleResetToDefault = useCallback(() => {
     setCurrentRegion(PRIMARY_REGIONS[0]);
     setSelectedRegion('GPS');
     setUserLocation(null);
@@ -242,23 +383,23 @@ export const App: React.FC = () => {
     setFilterBestNow(false);
     setFilterMegaRoosts(false);
     setMode('recent');
-    setObservations(INITIAL_FALLBACK_OBSERVATIONS || []);
+    setObservations((INITIAL_FALLBACK_OBSERVATIONS || []).map(normalizeObservation));
     setHotspots(MOCK_HOTSPOTS || []);
     setPinnedMeetup(null);
-  };
+  }, []);
 
   // Close welcome location modal and mark session
-  const handleDismissLocationModal = () => {
+  const handleDismissLocationModal = useCallback(() => {
     setIsLocationModalOpen(false);
     try {
       sessionStorage.setItem('birdbook_welcome_dismissed', 'true');
     } catch (e) {
       console.error(e);
     }
-  };
+  }, []);
 
-  // Field Chat: Check/Request Disclaimer agreement
-  const handleRequestDisclaimer = (): boolean => {
+  // Field Chat Disclaimer check
+  const handleRequestDisclaimer = useCallback((): boolean => {
     try {
       const agreed = localStorage.getItem(STORAGE_KEY_DISCLAIMER) === 'true';
       if (!agreed) {
@@ -270,19 +411,19 @@ export const App: React.FC = () => {
       console.error(e);
       return true;
     }
-  };
+  }, []);
 
-  // Field Chat: Check/Request Handle creation
-  const handleRequestHandle = (): string | null => {
+  // Field Chat Handle check
+  const handleRequestHandle = useCallback((): string | null => {
     if (userHandle && userHandle.trim().length >= 3) {
       return userHandle;
     }
     setIsHandleModalOpen(true);
     return null;
-  };
+  }, [userHandle]);
 
   // Agree to legal disclaimer
-  const handleAgreeDisclaimer = () => {
+  const handleAgreeDisclaimer = useCallback(() => {
     try {
       localStorage.setItem(STORAGE_KEY_DISCLAIMER, 'true');
     } catch (e) {
@@ -294,10 +435,10 @@ export const App: React.FC = () => {
     if (!userHandle) {
       setIsHandleModalOpen(true);
     }
-  };
+  }, [userHandle]);
 
   // Save permanent handle & home region
-  const handleSaveHandle = (handle: string, homeRegion: string) => {
+  const handleSaveHandle = useCallback((handle: string, homeRegion: string) => {
     setUserHandle(handle);
     setUserHomeRegion(homeRegion);
     try {
@@ -307,34 +448,59 @@ export const App: React.FC = () => {
       console.error(e);
     }
     setIsHandleModalOpen(false);
-  };
+  }, []);
 
   // Clear species filter and restore all regional observations
-  const handleClearSpeciesFilter = () => {
+  const handleClearSpeciesFilter = useCallback(() => {
     setSelectedSpecies(null);
     setSearchFilter('');
     if (mode === 'species') {
       setMode('recent');
     }
-  };
+  }, [mode]);
 
-  // Open Field Chat Drawer
-  const handleOpenChat = () => {
-    const isAgreed = handleRequestDisclaimer();
-    if (isAgreed) {
-      setIsChatOpen(true);
-    }
-  };
+  // Open Community Birder Chat
+  const handleOpenChat = useCallback(() => {
+    setIsChatOpen(true);
+  }, []);
 
   // Pin proposed meetup to map
-  const handlePinMeetupToMap = (meetup: MeetupProposal) => {
+  const handlePinMeetupToMap = useCallback((meetup: MeetupProposal) => {
     setPinnedMeetup(meetup);
     if (meetup.lat && meetup.lng) {
       setSelectedItem(null);
     }
-  };
+  }, []);
 
-  // Null-safe nationwide search, Mega-Roosts (>250), and "Best to View Right Now" active filtering
+  // Memoized Item Selection: Sanitizes clicked item into a pure, flat object with no Leaflet internals
+  const handleSelectItem = useCallback((item: Observation | Hotspot | null) => {
+    if (!item) {
+      setSelectedItem(null);
+      return;
+    }
+    const cleanItem = {
+      ...item,
+      lat: Number(item.lat),
+      lng: Number(item.lng),
+    };
+    setSelectedItem(cleanItem);
+
+    // When selecting any roost from sidebar or map, highlight and focus that roost's flight corridor
+    const obs = cleanItem as Observation;
+    const isRoost = obs.isCrowRoost || (typeof obs.howMany === 'number' && obs.howMany >= 250) || (obs.id && obs.id.startsWith('roost-'));
+    if (isRoost) {
+      const flightPath = getFlightPathForRoost(obs);
+      setSelectedCorridor(flightPath);
+    } else {
+      setSelectedCorridor(null);
+    }
+
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setIsSidebarOpen(false);
+    }
+  }, []);
+
+  // Null-safe filtered observations
   const displayedObservations = useMemo(() => {
     let result = observations || [];
 
@@ -399,7 +565,7 @@ export const App: React.FC = () => {
         [report.lat, report.lng],
       ];
 
-      const newObs: Observation = {
+      const rawObs: Observation = {
         id: `comm-${newRep.id || Date.now()}`,
         speciesCode: 'amecro',
         comName: `${newRep.species || report.species} (Community Sighting)`,
@@ -420,23 +586,24 @@ export const App: React.FC = () => {
         notes: `${newRep.behavior || report.behavior}: ${newRep.notes || report.notes}`,
       };
 
-      setObservations((prev) => [newObs, ...(prev || [])]);
-      setSelectedItem(newObs);
+      const cleanObs = normalizeObservation(rawObs);
+      setObservations((prev) => [cleanObs, ...(prev || [])]);
+      handleSelectItem(cleanObs);
       setIsReportModalOpen(false);
     } catch (err) {
       console.error('Failed to report sighting:', err);
     }
   };
 
-  const handleOpenAiWithQuestion = (question: string) => {
+  const handleOpenAiWithQuestion = useCallback((question: string) => {
     setAiCustomQuestion(question);
     setIsAiWidgetOpen(true);
-  };
+  }, []);
 
   return (
     <ErrorBoundary onReset={handleResetToDefault}>
-      <div className="flex flex-col w-full h-screen min-h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
-        {/* Clean Header: Logo, Search Bar, and Region Selector */}
+      <div className="flex flex-col w-full h-screen min-h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans select-none">
+        {/* Clean Header: Branded as "The Burd" with Search & Region Selector */}
         <Header
           currentRegion={currentRegion}
           onSelectRegion={(reg) => {
@@ -449,7 +616,6 @@ export const App: React.FC = () => {
             }
             setSelectedItem(null);
             setSelectedCorridor(null);
-            setObservations(INITIAL_FALLBACK_OBSERVATIONS || []);
           }}
           searchFilter={searchFilter}
           onSearchFilterChange={setSearchFilter}
@@ -467,11 +633,15 @@ export const App: React.FC = () => {
           }}
           onLocateMe={handleLocateMe}
           observations={observations || []}
+          onOpenPreflight={() => setIsPreflightOpen(true)}
+          preflightSummary={preflightSummary}
+          onOpenChat={handleOpenChat}
+          unreadChatCount={unreadChatCount}
         />
 
-        {/* Main View Area */}
+        {/* Main View Area: Persistent Left Sidebar on Desktop & Full-height Interactive Map */}
         <div className="flex-1 w-full h-full relative flex overflow-hidden">
-          {/* Clickable Mobile Backdrop Overlay behind Sidebar */}
+          {/* Collapsible Mobile Backdrop Overlay behind Sidebar */}
           {isSidebarOpen && (
             <div 
               className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden transition-opacity"
@@ -479,7 +649,7 @@ export const App: React.FC = () => {
             />
           )}
 
-          {/* Collapsible Left Intelligence Sidebar */}
+          {/* Persistent Left Sidebar on Desktop / Drawer on Mobile */}
           <Sidebar
             isOpen={isSidebarOpen}
             onToggle={() => setIsSidebarOpen((prev) => !prev)}
@@ -488,13 +658,7 @@ export const App: React.FC = () => {
             observations={displayedObservations || []}
             hotspots={hotspots || []}
             selectedItem={selectedItem}
-            onSelectItem={(item) => {
-              setSelectedItem(item);
-              setSelectedCorridor(null);
-              if (typeof window !== 'undefined' && window.innerWidth < 768) {
-                setIsSidebarOpen(false);
-              }
-            }}
+            onSelectItem={handleSelectItem}
             isLoading={isLoading}
             corridors={activeCorridors}
             selectedCorridor={selectedCorridor}
@@ -505,10 +669,6 @@ export const App: React.FC = () => {
                 setIsSidebarOpen(false);
               }
             }}
-            filterBestNow={filterBestNow}
-            onToggleFilterBestNow={() => setFilterBestNow((prev) => !prev)}
-            filterMegaRoosts={filterMegaRoosts}
-            onToggleFilterMegaRoosts={() => setFilterMegaRoosts((prev) => !prev)}
             currentRegion={currentRegion}
             onClearSpeciesFilter={handleClearSpeciesFilter}
             totalUnfilteredCount={observations?.length || 0}
@@ -516,19 +676,16 @@ export const App: React.FC = () => {
             searchFilter={searchFilter}
             onOpenShare={() => setIsShareModalOpen(true)}
             onOpenDonate={() => setIsDonateModalOpen(true)}
+            onOpenLayersModal={() => setIsLayersOpen(true)}
           />
 
-          {/* 100% Viewport Height Leaflet Map Container */}
+          {/* Full-Height Interactive Map on the Right */}
           <div className="flex-1 w-full h-full min-w-0 relative">
             <Map
               observations={displayedObservations || []}
               hotspots={hotspots || []}
               selectedItem={selectedItem}
-              mode={mode}
-              onSelectItem={(item) => {
-                setSelectedItem(item);
-                setSelectedCorridor(null);
-              }}
+              onSelectItem={handleSelectItem}
               corridors={activeCorridors}
               selectedCorridor={selectedCorridor}
               onSelectCorridor={(corridor) => {
@@ -545,19 +702,23 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Regional Community Meetup & Field Chat Drawer */}
-        <FieldChatDrawer
+        {/* Native Real-time Community Birder Chat Slide-Over Drawer */}
+        <CommunityChat
           isOpen={isChatOpen}
           onClose={() => setIsChatOpen(false)}
-          currentRegion={currentRegion}
-          nearbyHotspots={hotspots || []}
-          onPinMeetupToMap={handlePinMeetupToMap}
-          onRequestDisclaimer={handleRequestDisclaimer}
-          onRequestHandle={handleRequestHandle}
-          homeRegion={userHomeRegion}
+          messages={communityChatMessages}
+          sendMessage={sendCommunityMessage}
+          activeRoostId={activeRoostId}
+          activeRoostName={activeRoostName}
+          activeSpecies={activeSpecies}
+          activeChannel={chatChannel}
+          onSelectChannel={setChatChannel}
+          isRealtimeActive={isRealtimeActive}
+          isSupabaseConfigured={isSupabaseConfigured}
+          isLoading={isChatLoading}
         />
 
-        {/* Explicit Legal Liability & Outdoor Excursion Disclaimer Modal */}
+        {/* Legal Liability Disclaimer Modal */}
         <DisclaimerModal
           isOpen={isDisclaimerOpen}
           onAgree={handleAgreeDisclaimer}
@@ -582,7 +743,6 @@ export const App: React.FC = () => {
             setSelectedRegion(reg.category === 'gps' ? 'GPS' : (reg.regionCode || reg.id));
             setSelectedItem(null);
             setSelectedCorridor(null);
-            setObservations(INITIAL_FALLBACK_OBSERVATIONS || []);
           }}
           onLocateMe={handleLocateMe}
           isLocating={isLocating}
@@ -602,7 +762,7 @@ export const App: React.FC = () => {
           onSubmit={handleReportSighting}
         />
 
-        {/* Gemini AI Roost Intelligence & Optimal Viewing Forecast Widget */}
+        {/* Gemini AI Roost Intelligence Widget */}
         <AiRoostWidget
           isOpen={isAiWidgetOpen}
           onClose={() => setIsAiWidgetOpen(false)}
@@ -612,14 +772,14 @@ export const App: React.FC = () => {
           onToggleFilterBestNow={() => setFilterBestNow((prev) => !prev)}
         />
 
-        {/* Share Modal with Dynamic & Crisp QR Code Display */}
+        {/* Share Modal with Dynamic QR Code Display */}
         <ShareModal
           isOpen={isShareModalOpen}
           onClose={() => setIsShareModalOpen(false)}
           appName="The Burd"
         />
 
-        {/* PayPal Custom Amount Donation Modal */}
+        {/* PayPal Custom Donation Modal */}
         <DonateModal
           isOpen={isDonateModalOpen}
           onClose={() => setIsDonateModalOpen(false)}
@@ -635,11 +795,7 @@ export const App: React.FC = () => {
           }}
           isChatOpen={isChatOpen}
           onToggleChat={() => {
-            if (isChatOpen) {
-              setIsChatOpen(false);
-            } else {
-              handleOpenChat();
-            }
+            setIsChatOpen((prev) => !prev);
             setIsLayersOpen(false);
           }}
           isLayersOpen={isLayersOpen}
@@ -647,6 +803,7 @@ export const App: React.FC = () => {
             setIsLayersOpen((prev) => !prev);
           }}
           observationsCount={displayedObservations?.length || 0}
+          unreadChatCount={unreadChatCount}
         />
 
         {/* Map Layers & Controls Sheet Modal */}
@@ -671,6 +828,16 @@ export const App: React.FC = () => {
           }}
           onOpenShare={() => setIsShareModalOpen(true)}
           onOpenDonate={() => setIsDonateModalOpen(true)}
+          onOpenPreflight={() => setIsPreflightOpen(true)}
+        />
+
+        {/* Production Readiness & Pre-Flight Diagnostics Check Modal */}
+        <PreflightModal
+          isOpen={isPreflightOpen}
+          onClose={() => setIsPreflightOpen(false)}
+          summary={preflightSummary}
+          onRefresh={handleRefreshPreflight}
+          isLoading={isPreflightLoading}
         />
       </div>
     </ErrorBoundary>

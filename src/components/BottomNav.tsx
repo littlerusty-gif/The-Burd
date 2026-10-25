@@ -8,6 +8,7 @@ interface BottomNavProps {
   isLayersOpen: boolean;
   onToggleLayers: () => void;
   observationsCount?: number;
+  unreadChatCount?: number;
 }
 
 export const BottomNav: React.FC<BottomNavProps> = ({
@@ -18,6 +19,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   isLayersOpen,
   onToggleLayers,
   observationsCount,
+  unreadChatCount = 0,
 }) => {
   return (
     <nav
@@ -64,11 +66,17 @@ export const BottomNav: React.FC<BottomNavProps> = ({
         >
           <span className="text-sm">💬</span>
           <span>Chat</span>
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${
-              isChatOpen ? 'bg-slate-950' : 'bg-emerald-400 animate-pulse'
-            }`}
-          />
+          {unreadChatCount > 0 ? (
+            <span className="bg-rose-500 text-white font-mono text-[10px] font-extrabold px-1.5 py-0.2 rounded-full leading-tight">
+              {unreadChatCount > 9 ? '9+' : unreadChatCount}
+            </span>
+          ) : (
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                isChatOpen ? 'bg-slate-950' : 'bg-emerald-400 animate-pulse'
+              }`}
+            />
+          )}
         </button>
 
         {/* Tab 3: Layers */}

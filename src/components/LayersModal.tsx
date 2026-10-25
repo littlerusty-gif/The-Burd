@@ -12,6 +12,7 @@ import {
   QrCode,
   Heart,
   X,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface LayersModalProps {
@@ -29,6 +30,7 @@ interface LayersModalProps {
   onOpenAiWidget: () => void;
   onOpenShare: () => void;
   onOpenDonate: () => void;
+  onOpenPreflight?: () => void;
 }
 
 export const LayersModal: React.FC<LayersModalProps> = ({
@@ -46,6 +48,7 @@ export const LayersModal: React.FC<LayersModalProps> = ({
   onOpenAiWidget,
   onOpenShare,
   onOpenDonate,
+  onOpenPreflight,
 }) => {
   // Close on Escape key
   useEffect(() => {
@@ -298,6 +301,20 @@ export const LayersModal: React.FC<LayersModalProps> = ({
               <QrCode size={14} className="text-emerald-400" />
               <span>Share App</span>
             </button>
+
+            {onOpenPreflight && (
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenPreflight();
+                  onClose();
+                }}
+                className="col-span-2 flex items-center justify-center gap-2 p-2 rounded-xl bg-slate-900 hover:bg-slate-850 border border-slate-800 text-xs font-medium text-slate-300 transition-colors"
+              >
+                <ShieldCheck size={14} className="text-emerald-400" />
+                <span>Pre-Flight Readiness & Diagnostics</span>
+              </button>
+            )}
           </div>
 
           <button

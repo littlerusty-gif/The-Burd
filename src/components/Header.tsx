@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { ViewMode, TaxonomyItem, RegionConfig, Observation } from '../types/bird';
 import { PRIMARY_REGIONS, US_STATES, NATIONWIDE_TAXONOMY } from '../data/regions';
-import { Search, MapPin, Navigation, ChevronDown, Globe, X, Download } from 'lucide-react';
+import { Search, MapPin, Navigation, ChevronDown, Globe, X, Download, ShieldCheck, MessageSquare } from 'lucide-react';
+import { PreflightSummary } from '../utils/preflightCheck';
 
 // Global variable to store beforeinstallprompt event across header lifecycles
 let deferredPrompt: any = null;
@@ -16,6 +17,10 @@ interface HeaderProps {
   onSetMode?: (mode: ViewMode) => void;
   onLocateMe: () => void;
   observations?: Observation[];
+  onOpenPreflight?: () => void;
+  preflightSummary?: PreflightSummary | null;
+  unreadChatCount?: number;
+  onOpenChat?: () => void;
   // Backwards compatibility optional props
   mode?: ViewMode;
   onOpenReportModal?: () => void;
@@ -25,7 +30,6 @@ interface HeaderProps {
   filterBestNow?: boolean;
   onToggleFilterBestNow?: () => void;
   isLocating?: boolean;
-  onOpenChat?: () => void;
   onOpenShare?: () => void;
   onOpenDonate?: () => void;
 }
@@ -40,6 +44,10 @@ export const Header: React.FC<HeaderProps> = ({
   onSetMode,
   onLocateMe,
   observations = [],
+  onOpenPreflight,
+  preflightSummary,
+  unreadChatCount = 0,
+  onOpenChat,
 }) => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -325,6 +333,63 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* 3. Top Controls: In-App Install Button & Region Selector Dropdown */}
           <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+            {/* Pre-Flight Diagnostics Status Button */}
+            {onOpenPreflight && (
+              <button
+                type="button"
+                id="preflight-status-button"
+                data-testid="preflight-status-button"
+                onClick={onOpenPreflight}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-750 hover:border-slate-600 rounded-lg text-xs font-semibold text-slate-200 transition-all shadow-sm active:scale-95 shrink-0"
+                title="Pre-Flight Readiness & Diagnostics"
+              >
+                <ShieldCheck
+                  size={14}
+                  className={
+                    preflightSummary?.hasError
+                      ? 'text-rose-400'
+                      : preflightSummary?.hasWarning
+                      ? 'text-amber-400'
+                      : preflightSummary?.allPassed
+                      ? 'text-emerald-400'
+                      : 'text-slate-400'
+                  }
+                />
+                <span className="hidden sm:inline">Pre-Flight Status</span>
+                {preflightSummary && (
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      preflightSummary.allPassed
+                        ? 'bg-emerald-400'
+                        : preflightSummary.hasError
+                        ? 'bg-rose-500'
+                        : 'bg-amber-400'
+                    }`}
+                  />
+                )}
+              </button>
+            )}
+
+            {/* Community Birder Chat Toggle Button with Unread Badge */}
+            {onOpenChat && (
+              <button
+                type="button"
+                id="community-chat-header-button"
+                data-testid="community-chat-header-button"
+                onClick={onOpenChat}
+                className="relative inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-750 hover:border-slate-600 rounded-lg text-xs font-semibold text-slate-200 transition-all shadow-sm active:scale-95 shrink-0"
+                title="Open Real-time Community Birder Chat"
+              >
+                <MessageSquare size={14} className="text-emerald-400" />
+                <span className="hidden sm:inline">Birder Chat</span>
+                {typeof unreadChatCount === 'number' && unreadChatCount > 0 && (
+                  <span className="bg-rose-500 text-white font-mono text-[10px] font-extrabold px-1.5 py-0.2 rounded-full leading-tight">
+                    {unreadChatCount > 9 ? '9+' : unreadChatCount}
+                  </span>
+                )}
+              </button>
+            )}
+
             {/* In-App Install Button: default style display: none, revealed on confirmed support */}
             <button
               type="button"
