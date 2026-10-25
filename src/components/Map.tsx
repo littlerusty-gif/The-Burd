@@ -1,6 +1,16 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { Observation, Hotspot, FlightCorridor, RegionConfig } from '../types/bird';
 import { getFlightPathForRoost, generateProceduralFlightPath } from '../data/roosts';
+
+// Fix Vite asset URL resolution for default Leaflet marker icons
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
 import {
   Layers,
   Compass,
@@ -294,8 +304,8 @@ export const Map: React.FC<MapProps> = ({
 
   // 1. Strict Mode Safe Initialization
   useEffect(() => {
-    if (!mapContainerRef.current) return;
     const container = mapContainerRef.current;
+    if (!container || !document.body.contains(container)) return;
 
     // React 18/19 Strict Mode: Clean previous instance before re-initializing
     if (mapInstanceRef.current) {
@@ -306,11 +316,8 @@ export const Map: React.FC<MapProps> = ({
     }
 
     if ((container as any)._leaflet_id) {
-      (container as any)._leaflet_id = null;
+      delete (container as any)._leaflet_id;
     }
-
-    const L = (window as any).L;
-    if (!L) return;
 
     try {
       const map = L.map(container, {
@@ -370,7 +377,7 @@ export const Map: React.FC<MapProps> = ({
         mapInstanceRef.current = null;
       }
       if (container) {
-        (container as any)._leaflet_id = null;
+        delete (container as any)._leaflet_id;
       }
     };
   }, []); // Mount-only initialization to protect Strict Mode
@@ -378,8 +385,7 @@ export const Map: React.FC<MapProps> = ({
   // 2. Basemap Switcher Effect (Free Google Tiles: Terrain, Satellite, Streets, Dark)
   useEffect(() => {
     const map = mapInstanceRef.current;
-    const L = (window as any).L;
-    if (!map || !L) return;
+    if (!map) return;
 
     const config = BASEMAP_CONFIGS[selectedBasemap];
     if (!config) return;
@@ -496,11 +502,8 @@ export const Map: React.FC<MapProps> = ({
 
     isProgrammaticMoveRef.current = true;
     try {
-      const L = (window as any).L;
-      if (L) {
-        const bounds = L.latLngBounds(selectedCorridor.coordinates);
-        map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
-      }
+      const bounds = L.latLngBounds(selectedCorridor.coordinates);
+      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
     } catch (e) {}
   }, [selectedCorridor]);
 
@@ -509,9 +512,8 @@ export const Map: React.FC<MapProps> = ({
   const userLng = userLocation?.[1];
 
   useEffect(() => {
-    const L = (window as any).L;
     const layer = userGpsLayerRef.current;
-    if (!L || !layer) return;
+    if (!layer) return;
 
     layer.clearLayers();
 
@@ -543,9 +545,8 @@ export const Map: React.FC<MapProps> = ({
 
   // 8. Pinned Community Meetup Marker
   useEffect(() => {
-    const L = (window as any).L;
     const layer = meetupLayerRef.current;
-    if (!L || !layer) return;
+    if (!layer) return;
 
     layer.clearLayers();
 
@@ -573,8 +574,7 @@ export const Map: React.FC<MapProps> = ({
   // 9. Radar Overlay
   useEffect(() => {
     const map = mapInstanceRef.current;
-    const L = (window as any).L;
-    if (!map || !L) return;
+    if (!map) return;
 
     if (radarLayerRef.current) {
       try {
@@ -603,8 +603,7 @@ export const Map: React.FC<MapProps> = ({
   // 10. FLIGHT CORRIDORS WITH HIGH-VISIBILITY DIRECTION ARROWS FOR ALL ROOSTS
   useEffect(() => {
     const layer = corridorsLayerRef.current;
-    const L = (window as any).L;
-    if (!layer || !L) return;
+    if (!layer) return;
 
     layer.clearLayers();
 
@@ -772,8 +771,7 @@ export const Map: React.FC<MapProps> = ({
   // 11. ROOSTS & SIGHTINGS MARKERS WITH BIRD COUNT TIERS
   useEffect(() => {
     const layer = markersLayerRef.current;
-    const L = (window as any).L;
-    if (!layer || !L) return;
+    if (!layer) return;
 
     layer.clearLayers();
     markerLookupRef.current.clear();

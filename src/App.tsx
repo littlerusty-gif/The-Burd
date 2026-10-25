@@ -3,7 +3,7 @@ import { Observation, Hotspot, ViewMode, TaxonomyItem, CrowRoostReport, FlightCo
 import { MeetupProposal } from './types/chat';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
-import { Map } from './components/Map';
+import { Map as BirdMap } from './components/Map';
 import { ReportModal } from './components/ReportModal';
 import { AiRoostWidget } from './components/AiRoostWidget';
 import { MobileBottomSheet } from './components/MobileBottomSheet';
@@ -17,6 +17,7 @@ import { DonateModal } from './components/DonateModal';
 import { BottomNav } from './components/BottomNav';
 import { LayersModal } from './components/LayersModal';
 import { PreflightModal } from './components/PreflightModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { PreflightSummary, runPreflightDiagnostics } from './utils/preflightCheck';
 import { INITIAL_FALLBACK_OBSERVATIONS, MOCK_HOTSPOTS } from './data/mockPortlandData';
 import { PRIMARY_REGIONS } from './data/regions';
@@ -96,12 +97,12 @@ export const App: React.FC = () => {
   const [observations, setObservations] = useState<Observation[]>(() => {
     const fallbacks = (INITIAL_FALLBACK_OBSERVATIONS || []).map(normalizeObservation);
     const roosts = getRoostsAsObservations().map(normalizeObservation);
-    const map = new Map<string, Observation>();
-    roosts.forEach((r) => map.set(r.id, r));
+    const obsMap = new globalThis.Map<string, Observation>();
+    roosts.forEach((r) => obsMap.set(r.id, r));
     fallbacks.forEach((f) => {
-      if (!map.has(f.id)) map.set(f.id, f);
+      if (!obsMap.has(f.id)) obsMap.set(f.id, f);
     });
-    return Array.from(map.values());
+    return Array.from(obsMap.values());
   });
   const [hotspots, setHotspots] = useState<Hotspot[]>(MOCK_HOTSPOTS || []);
   const [selectedItem, setSelectedItem] = useState<Observation | Hotspot | null>(null);
@@ -290,10 +291,10 @@ export const App: React.FC = () => {
           if (!isCancelled && Array.isArray(obs) && obs.length > 0) {
             const fetched = obs.map(normalizeObservation);
             const roosts = getRoostsAsObservations().map(normalizeObservation);
-            const map = new Map<string, Observation>();
-            roosts.forEach((r) => map.set(r.id, r));
-            fetched.forEach((f) => map.set(f.id, f));
-            setObservations(Array.from(map.values()));
+            const obsMap = new globalThis.Map<string, Observation>();
+            roosts.forEach((r) => obsMap.set(r.id, r));
+            fetched.forEach((f) => obsMap.set(f.id, f));
+            setObservations(Array.from(obsMap.values()));
           }
         }
       } catch (err) {
@@ -681,7 +682,7 @@ export const App: React.FC = () => {
 
           {/* Full-Height Interactive Map on the Right */}
           <div className="flex-1 w-full h-full min-w-0 relative">
-            <Map
+            <BirdMap
               observations={displayedObservations || []}
               hotspots={hotspots || []}
               selectedItem={selectedItem}
